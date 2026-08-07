@@ -1,0 +1,219 @@
+import json, numpy as np, pandas as pd
+from dataclasses import dataclass, field, asdict
+
+rng = np.random.default_rng(20260806)
+
+# ── Provenance registry ───────────────────────────────────────────────────
+# Every parameter records: value, kind, source, justification.
+# kind: "empirical" (from data/literature) | "derived" (computed) | "assumed" (free)
+PROV = {}
+def reg(name, value, kind, source, justification):
+    PROV[name] = {"value": value, "kind": kind, "source": source,
+                  "justification": justification}
+    return value
+
+# ── Load the empirical panel ──────────────────────────────────────────────
+master = pd.read_csv("master_dataset.csv", parse_dates=["date"])
+if "is_business_day" not in master: master["is_business_day"] = master["SOFR"].notna()
+bd = master[master["is_business_day"]].dropna(subset=["sofr99_iorb_bps"])
+spread = bd["sofr99_iorb_bps"]
+
+# ── Fedwire intraday value profile ────────────────────────────────────────
+FEDWIRE = reg("fedwire_intraday_profile",
+    {"09:00":0.0238,"10:00":0.0296,"11:00":0.0516,"12:00":0.0563,"13:00":0.0546,
+     "14:00":0.0744,"15:00":0.1265,"16:00":0.2697,"17:00":0.2827,"18:00":0.0309},
+    "empirical",
+    "Armantier, Arnold & McAndrews (2008), FRBNY Economic Policy Review 14(2), "
+    "83-112, Table 1 'Percentiles of Value Time Distribution', 2006 mean column. "
+    "https://www.newyorkfed.org/medialibrary/media/research/epr/08v14n2/0809arma.pdf",
+    "Decile settlement times inverted by monotone (PCHIP) interpolation of the "
+    "cumulative value distribution, evaluated at hour boundaries, renormalised over "
+    "09:00-18:30. Validation: derived post-17:00 share is 31.4%; the same paper "
+    "independently reports >30% for 2005. That figure was not used in the inversion.")
+
+M = reg("payments_per_day", 400, "empirical",
+    "Armantier et al. (2008), Table 2: mean daily Fedwire payment count 465,237 "
+    "across all participants.",
+    "Order-of-magnitude anchor for one large participant's daily outgoing volume. "
+    "Set to 400 releasable payments per simulated day. Result is scale-invariant in "
+    "M up to a constant factor on information; only the shape of I(a) is claimed.")
+
+# ── Latent tightness state theta ──────────────────────────────────────────
+theta_pct = reg("theta0_percentile", 90, "assumed",
+    "Calibration choice.",
+    "Simulator is anchored at a stressed-but-not-extreme day: the 90th percentile "
+    "of observed SOFR99-IORB. Swept in the robustness section.")
+theta0_bps = float(spread.quantile(theta_pct/100))
+
+THETA0 = reg("theta0", 0.90, "assumed",
+    f"Anchored to the {theta_pct}th percentile of observed SOFR99-IORB "
+    f"({theta0_bps:.1f} bps) over {bd['date'].min().date()} to {bd['date'].max().date()}.",
+    "theta is a latent normalised congestion index on [0,1], not an observable. The "
+    "map from basis-point spreads to theta is assumed monotone; only the anchor point "
+    "is empirical. theta0=0.90 places the system in a congested regime where response "
+    "delays are dispersed enough to carry information.")
+
+R0 = reg("r0_base_response_rate", 1.0, "derived",
+    "Normalisation.",
+    "Response delays are Exp(r0*(1-theta)). r0 sets the time unit; setting it to 1 "
+    "makes delays dimensionless. No empirical content.")
+
+KAPPA = reg("kappa_coupling", 0.90, "assumed",
+    "FREE PARAMETER - no empirical counterpart exists.",
+    "Strength of the relief effect: releasing at intensity a moves tightness by "
+    "-kappa*a. No public data measures how much one participant's releases loosen "
+    "system-wide congestion. This is the paper's principal free parameter and is "
+    "swept across [0.3, 1.0] in the sensitivity analysis. The claim is that a regime "
+    "exists, not that kappa takes any particular value.")
+
+reg("theta0_bps_anchor", theta0_bps, "empirical",
+    "FRED SOFR99, IORB via master_dataset.csv",
+    f"{theta_pct}th percentile of the observed tightness spread.")
+
+print(f"tightness spread: median {spread.median():.1f} bps | "
+      f"p90 {spread.quantile(.9):.1f} | p99 {spread.quantile(.99):.1f} | max {spread.max():.1f}")
+print(f"theta0={THETA0}  kappa={KAPPA}  M={M}  r0={R0}")
+print(f"analytic a* = (1-theta0)/kappa = {(1-THETA0)/KAPPA:.3f}")
+print(f"theta at a=1: {THETA0 - KAPPA:.3f}  (must be >= 0)")
+
+@dataclass
+class SimConfig:
+    theta0: float = THETA0
+    kappa:  float = KAPPA
+    r0:     float = R0
+    M:      int   = M
+    profile: dict = field(default_factory=lambda: FEDWIRE)
+
+def hourly_counts(n_total, profile, rng):
+    """Distribute n_total releasable payments across the operating day."""
+    hours  = list(profile.keys())
+    shares = np.array(list(profile.values()))
+    return dict(zip(hours, rng.multinomial(n_total, shares / shares.sum())))
+
+def run_day(a, cfg=SimConfig(), rng=rng):
+    """One simulated operating day at release intensity a in [0,1].
+
+    Mechanism
+    ---------
+    theta  latent system tightness in [0,1]; 1 = maximally congested.
+    Ego releases n = a*M payments. Each triggers a counterparty response whose
+    delay is Exp(rate = r0*(1-theta)): a tight system responds slowly.
+    Releasing injects liquidity, so theta declines:  theta(a) = theta0 - kappa*a.
+
+    The observable is the set of response delays. Nothing about other banks'
+    states, queues, or actions is observed.
+    """
+    n = max(int(round(a * cfg.M)), 3)
+    theta = cfg.theta0 - cfg.kappa * a          # relief: the probe depletes the state
+    theta = float(np.clip(theta, 0.0, 1.0))
+    rate  = cfg.r0 * (1.0 - theta)
+    delays = rng.exponential(1.0 / rate, size=n)
+    return {"a": a, "theta_true": theta, "n_obs": n, "delays": delays,
+            "hourly": hourly_counts(n, cfg.profile, rng)}
+
+# Acceptance test: theta falls with a; delays shorten as the system loosens
+print(f"{'a':>5}{'theta':>8}{'n':>6}{'mean delay':>12}")
+for a in (0.0, 0.25, 0.5, 0.75, 1.0):
+    d = run_day(a)
+    print(f"{a:5.2f}{d['theta_true']:8.3f}{d['n_obs']:6d}{d['delays'].mean():12.3f}")
+
+    def estimate_theta(delays, cfg=SimConfig()):
+    """MLE of theta from observed response delays.
+
+    delays ~ Exp(rate = r0*(1-theta)).  The unbiased MLE of an exponential rate
+    from n observations is (n-1)/sum(d), which we invert to recover theta.
+    Fisher information per observation is 1/(1-theta)^2 -- it FALLS as the system
+    loosens, because a fast-responding system produces tightly clustered delays
+    with little dispersion to read.
+    """
+    n = len(delays)
+    rate_hat = (n - 1) / delays.sum()
+    return float(np.clip(1.0 - rate_hat / cfg.r0, -1.0, 1.0))
+
+def sweep_point(a, K=6000, cfg=SimConfig(), rng=rng):
+    n = max(int(round(a * cfg.M)), 3)
+    theta = float(np.clip(cfg.theta0 - cfg.kappa * a, 0.0, 1.0))
+    d = rng.exponential(1.0 / (cfg.r0 * (1 - theta)), size=(K, n))
+    est = 1.0 - ((n - 1) / d.sum(1)) / cfg.r0
+    return {"a": a, "theta_true": theta, "n_obs": n,
+            "bias": est.mean() - theta, "info_emp": 1.0 / est.var(),
+            "info_analytic": n / (1 - theta) ** 2}
+
+print(f"{'a':>5}{'theta':>8}{'n':>6}{'bias':>10}")
+for a in (0.05, 0.2, 0.5, 1.0):
+    r = sweep_point(a, K=6000)
+    print(f"{r['a']:5.2f}{r['theta_true']:8.3f}{r['n_obs']:6d}{r['bias']:10.5f}")
+print("\nPASS if |bias| < 0.005 everywhere -- estimator and generative model agree.")
+
+import matplotlib.pyplot as plt
+
+grid = np.concatenate([np.linspace(0.02, 0.30, 15), np.linspace(0.35, 1.0, 14)])
+res  = pd.DataFrame([sweep_point(a, K=8000) for a in grid])
+
+a_star_analytic = (THETA0 - 1 + 0) / 0 if KAPPA == 0 else (1 - THETA0) / KAPPA
+a_star_emp = res.loc[res["info_emp"].idxmax(), "a"]
+peak, end = res["info_emp"].max(), res["info_emp"].iloc[-1]
+
+fig, ax = plt.subplots(figsize=(7.2, 4.4))
+ax.plot(res["a"], res["info_emp"], "o-", ms=4, lw=1.4, color="crimson",
+        label="Empirical  $1/\\mathrm{Var}(\\hat\\theta)$")
+ax.plot(res["a"], res["info_analytic"], "--", lw=1.2, color="navy",
+        label="Analytic  $aM/(1-\\theta_0+\\kappa a)^2$")
+ax.axvline(a_star_analytic, ls=":", color="gray")
+ax.annotate(f"$a^*=(1-\\theta_0)/\\kappa={a_star_analytic:.2f}$",
+            (a_star_analytic, peak*0.55), fontsize=9, color="gray",
+            xytext=(a_star_analytic+0.08, peak*0.55))
+ax.set_xlabel("Release (probe) intensity  $a$")
+ax.set_ylabel("Fisher information about $\\theta$")
+ax.set_title("Information about system tightness is non-monotone in probe intensity")
+ax.legend(frameon=False, fontsize=9); ax.set_ylim(bottom=0)
+plt.tight_layout(); plt.savefig("fig2_information_curve.png", dpi=300,
+                                bbox_inches="tight"); plt.show()
+
+print(f"analytic peak  a* = {a_star_analytic:.3f}")
+print(f"empirical peak a  = {a_star_emp:.3f}")
+print(f"peak / full-release ratio = {peak/end:.2f}x")
+print(f"max |empirical - analytic| / analytic = "
+      f"{(res['info_emp']-res['info_analytic']).abs().div(res['info_analytic']).max():.3f}")
+print("\nGO if: inverted U present, empirical peak within ~0.05 of analytic, ratio > 1.5")
+res.to_csv("information_curve.csv", index=False)
+
+rows = []
+for k in (0.3, 0.5, 0.7, 0.9):
+    cfg = SimConfig(kappa=k)
+    sub = pd.DataFrame([{**sweep_point(a, K=4000, cfg=cfg)} for a in grid])
+    rows.append({"kappa": k, "a_star_analytic": (1-THETA0)/k,
+                 "a_star_empirical": sub.loc[sub["info_emp"].idxmax(), "a"],
+                 "peak_ratio": sub["info_emp"].max()/sub["info_emp"].iloc[-1],
+                 "theta_at_a1": max(THETA0-k, 0.0)})
+sens = pd.DataFrame(rows)
+print(sens.round(3).to_string(index=False))
+
+reg("kappa_sensitivity", sens.round(4).to_dict("records"), "derived",
+    "Cell S5 sweep.",
+    "Peak location tracks (1-theta0)/kappa across the swept range, confirming the "
+    "inverted U is a structural property of the mechanism rather than an artefact "
+    "of one parameter choice. Larger kappa moves the peak earlier and deepens the "
+    "decline, as the analytic result predicts.")
+
+reg("estimator", "unbiased exponential-rate MLE, (n-1)/sum(d)", "derived",
+    "Cell S3.", "Parametric rather than neural, so the information curve measures "
+    "the mechanism and not training dynamics. Neural filter deferred to the "
+    "full-environment stage.")
+
+with open("provenance_simulator.json", "w") as f:
+    json.dump(PROV, f, indent=2, default=str)
+
+print("\n--- PROVENANCE SUMMARY ---")
+for k, v in PROV.items():
+    print(f"[{v['kind']:>9}] {k}")
+print(f"\nempirical: {sum(v['kind']=='empirical' for v in PROV.values())} | "
+      f"derived: {sum(v['kind']=='derived' for v in PROV.values())} | "
+      f"assumed: {sum(v['kind']=='assumed' for v in PROV.values())}")
+
+from google.colab import files
+for fn in ("fig2_information_curve.png", "information_curve.csv",
+           "provenance_simulator.json"):
+    files.download(fn)
+
+    
