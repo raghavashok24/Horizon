@@ -1,0 +1,96 @@
+{
+  "fedwire_intraday_profile": {
+    "value": {
+      "09:00": 0.0238,
+      "10:00": 0.0296,
+      "11:00": 0.0516,
+      "12:00": 0.0563,
+      "13:00": 0.0546,
+      "14:00": 0.0744,
+      "15:00": 0.1265,
+      "16:00": 0.2697,
+      "17:00": 0.2827,
+      "18:00": 0.0309
+    },
+    "kind": "empirical",
+    "source": "Armantier, Arnold & McAndrews (2008), FRBNY Economic Policy Review 14(2), 83-112, Table 1 'Percentiles of Value Time Distribution', 2006 mean column. https://www.newyorkfed.org/medialibrary/media/research/epr/08v14n2/0809arma.pdf",
+    "justification": "Decile settlement times inverted by monotone (PCHIP) interpolation of the cumulative value distribution, evaluated at hour boundaries, renormalised over 09:00-18:30. Validation: derived post-17:00 share is 31.4%; the same paper independently reports >30% for 2005. That figure was not used in the inversion."
+  },
+  "payments_per_day": {
+    "value": 400,
+    "kind": "empirical",
+    "source": "Armantier et al. (2008), Table 2: mean daily Fedwire payment count 465,237 across all participants.",
+    "justification": "Order-of-magnitude anchor for one large participant's daily outgoing volume. Set to 400 releasable payments per simulated day. Result is scale-invariant in M up to a constant factor on information; only the shape of I(a) is claimed."
+  },
+  "theta0_percentile": {
+    "value": 90,
+    "kind": "assumed",
+    "source": "Calibration choice.",
+    "justification": "Simulator is anchored at a stressed-but-not-extreme day: the 90th percentile of observed SOFR99-IORB. Swept in the robustness section."
+  },
+  "theta0": {
+    "value": 0.9,
+    "kind": "assumed",
+    "source": "Anchored to the 90th percentile of observed SOFR99-IORB (10.0 bps) over 2021-08-02 to 2026-08-04.",
+    "justification": "theta is a latent normalised congestion index on [0,1], not an observable. The map from basis-point spreads to theta is assumed monotone; only the anchor point is empirical. theta0=0.90 places the system in a congested regime where response delays are dispersed enough to carry information."
+  },
+  "r0_base_response_rate": {
+    "value": 1.0,
+    "kind": "derived",
+    "source": "Normalisation.",
+    "justification": "Response delays are Exp(r0*(1-theta)). r0 sets the time unit; setting it to 1 makes delays dimensionless. No empirical content."
+  },
+  "kappa_coupling": {
+    "value": 0.9,
+    "kind": "assumed",
+    "source": "FREE PARAMETER - no empirical counterpart exists.",
+    "justification": "Strength of the relief effect: releasing at intensity a moves tightness by -kappa*a. No public data measures how much one participant's releases loosen system-wide congestion. This is the paper's principal free parameter and is swept across [0.3, 1.0] in the sensitivity analysis. The claim is that a regime exists, not that kappa takes any particular value."
+  },
+  "theta0_bps_anchor": {
+    "value": 10.000000000000009,
+    "kind": "empirical",
+    "source": "FRED SOFR99, IORB via master_dataset.csv",
+    "justification": "90th percentile of the observed tightness spread."
+  },
+  "kappa_sensitivity": {
+    "value": [
+      {
+        "kappa": 0.3,
+        "a_star_analytic": 0.3333,
+        "a_star_empirical": 0.26,
+        "peak_ratio": 1.3528,
+        "theta_at_a1": 0.6
+      },
+      {
+        "kappa": 0.5,
+        "a_star_analytic": 0.2,
+        "a_star_empirical": 0.2,
+        "peak_ratio": 1.8621,
+        "theta_at_a1": 0.4
+      },
+      {
+        "kappa": 0.7,
+        "a_star_analytic": 0.1429,
+        "a_star_empirical": 0.14,
+        "peak_ratio": 2.2966,
+        "theta_at_a1": 0.2
+      },
+      {
+        "kappa": 0.9,
+        "a_star_analytic": 0.1111,
+        "a_star_empirical": 0.12,
+        "peak_ratio": 2.6996,
+        "theta_at_a1": 0.0
+      }
+    ],
+    "kind": "derived",
+    "source": "Cell S5 sweep.",
+    "justification": "Peak location tracks (1-theta0)/kappa across the swept range, confirming the inverted U is a structural property of the mechanism rather than an artefact of one parameter choice. Larger kappa moves the peak earlier and deepens the decline, as the analytic result predicts."
+  },
+  "estimator": {
+    "value": "unbiased exponential-rate MLE, (n-1)/sum(d)",
+    "kind": "derived",
+    "source": "Cell S3.",
+    "justification": "Parametric rather than neural, so the information curve measures the mechanism and not training dynamics. Neural filter deferred to the full-environment stage."
+  }
+}
