@@ -1,7 +1,3 @@
-SIMULATOR COMPLETED
-
-
----
 ## The Simulator: Development, Calibration, and Validation
 
 ### Why a simulator
