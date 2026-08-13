@@ -12,7 +12,7 @@ The central idea is that settlement risk is **action-conditional**: a bank's end
 - **Static reserve rules fail exactly where reserves are ample.** Breach-detection F1 for a static reserves-only rule falls from 1.00 to 0.70 moving from the scarcest to the most abundant reserve regime; the certifier stays at 0.91–1.00 across all regimes.
 - **Schedule selection recovers release-on-arrival.** Choosing the lowest-certified-risk schedule concentrates on full-intensity release (84% in the top band), consistent with the analytic liquidity-recycling prediction, and meets a 10% unsettled-value target on materially less reserve than conservative policies.
 
-## How the pieces fit together
+## High Level of the Project
 
 ```
 FRED + FDIC public data ──► empirical funding-tightness panel (2021–2026)
