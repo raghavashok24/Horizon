@@ -4,7 +4,7 @@ Horizon is a research system for measuring and certifying **intraday liquidity r
 
 The central idea is that settlement risk is **action-conditional**: a bank's end-of-day risk depends not just on what it observes mid-morning, but on the payment-release schedule it *plans to execute*. Conditioning on the planned schedule is what makes risk certifiable.
 
-## Headline results
+## Key results
 
 - **Certification requires the planned schedule.** A gradient-boosting certifier given mid-morning observables, reserves, *and the planned release schedule* reaches **R² ≈ 0.90** on end-of-day unsettled-value risk — matching a dimension-matched oracle with full system state — versus **R² ≈ 0.33** for the same model without the schedule.
 - **The information bound is real and non-monotone.** Fisher information about latent congestion is an inverted-U in a bank's release intensity, peaking at an interior optimum `a* = (1 − θ₀)/κ` (~12% of capacity in the calibrated setting). Probing hard enough to get a sharp reading relieves the congestion being measured — you can only measure congestion while congestion exists. The closed form is verified by Monte-Carlo simulation across a κ-sensitivity sweep.
